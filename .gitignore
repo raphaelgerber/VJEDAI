@@ -4,6 +4,9 @@ data/train/*
 external/
 preds/*
 checkpoints/*
+logs/*
+__pycache__/*
+*/__pycache__/*
 
 # filetypes
 *.png

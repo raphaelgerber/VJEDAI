@@ -3,24 +3,24 @@
 #SBATCH --output=logs/%x-%j.out
 #SBATCH --error=logs/%x-%j.err
 #SBATCH --partition=gpu
-#SBATCH --gpus 5060ti:1
+#SBATCH --gpus 2080ti:1
 #SBATCH --account=cil_jobs
 #SBATCH --time=12:00:00
 
 set -e
 
 export SCRATCH="/work/scratch/$USER"
-export HF_HOME=$SCRATCH/cache/hf
-export TORCH_HOME=$SCRATCH/cache/torch
+export HF_HOME="$SCRATCH/cache/hf"
+export TORCH_HOME="$SCRATCH/cache/torch"
 
-cd "$HOME"
+cd "$HOME/mono"
 
 mkdir -p "external"
 
 source ~/.bashrc
 conda activate /cluster/courses/cil/envs/envs/monocular-depth-estimation
 
-python -m pip install opencv-python timm einops
+python -m pip install opencv-python timm einops torchinfo
 
 if [ ! -d "external/vjepa2" ]; then
     git clone https://github.com/facebookresearch/vjepa2.git external/vjepa2
@@ -39,4 +39,4 @@ export PYTHONPATH="external/vjepa2/src:$PYTHONPATH"
 export PYTHONPATH="external/vjepa2:$PYTHONPATH"
 export PYTHONPATH="$SCRATCH:$PYTHONPATH"
 
-python -u Full_Pipeline_For_Cluster.py
+python -u scratch.py

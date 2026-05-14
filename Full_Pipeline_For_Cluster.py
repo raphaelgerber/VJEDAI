@@ -6,6 +6,7 @@ import torch
 from pathlib import Path
 import sys
 import warnings
+from huggingface_hub import hf_hub_download
 warnings.filterwarnings("ignore")
 
 from dataset import TrainDataset, TestDataset
@@ -46,7 +47,7 @@ print("data loaded.")
 device = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"Device: {device}")
 
-PROJECT_ROOT = Path("/home/ragerber").resolve()
+PROJECT_ROOT = Path.home().resolve()
 VJEPA_ROOT = PROJECT_ROOT / "external" / "vjepa2"
 VJEPA_SRC = VJEPA_ROOT / "src"
 DA_ROOT = PROJECT_ROOT / "external" / "Depth-Anything-V2"
@@ -79,9 +80,9 @@ model_configs = {
 }
 
 da_encoder = DEPTH_ANYTHING_MODEL
-
+da_checkpoint = hf_hub_download(repo_id="depth-anything/Depth-Anything-V2", filename=f"depth_anything_v2_{da_encoder}.pth")
 da_model = DepthAnythingV2(**model_configs[da_encoder])
-da_model.load_state_dict(torch.load(f'./checkpoints/depth_anything_v2_{da_encoder}.pth', map_location='cpu'))
+da_model.load_state_dict(torch.load(da_checkpoint, map_location='cpu'))
 da_model = da_model.to(device).eval()
 print("DepthAnything loaded.")
 
