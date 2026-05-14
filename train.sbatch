@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=depth_fusion
-#SBATCH --output=/home/ragerber/logs/%x-%j.out
-#SBATCH --error=/home/ragerber/logs/%x-%j.err
+#SBATCH --output=/home/%u/logs/%x-%j.out
+#SBATCH --error=/home/%u/logs/%x-%j.err
 #SBATCH --partition=gpu
 #SBATCH --gpus 5060ti:1
 #SBATCH --account=cil_jobs
@@ -9,7 +9,7 @@
 
 set -e
 
-cd /home/ragerber
+cd "$HOME"
 
 mkdir -p logs
 mkdir -p checkpoints
@@ -39,8 +39,8 @@ if [ ! -f checkpoints/depth_anything_v2_vitb.pth ]; then
       -o checkpoints/depth_anything_v2_vitb.pth
 fi
 
-export PYTHONPATH="/home/ragerber/external/vjepa2/src:$PYTHONPATH"
-export PYTHONPATH="/home/ragerber/external/vjepa2:$PYTHONPATH"
-export PYTHONPATH="/home/ragerber:$PYTHONPATH"
+export PYTHONPATH="$HOME/external/vjepa2/src:$PYTHONPATH"
+export PYTHONPATH="$HOME/external/vjepa2:$PYTHONPATH"
+export PYTHONPATH="$HOME:$PYTHONPATH"
 
 python -u Full_Pipeline_For_Cluster.py

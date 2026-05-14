@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 
-CLUSTER_USER="ragerber"
-CLUSTER_HOST="student-cluster.inf.ethz.ch"
-CLUSTER_DIR="/home/ragerber"
+CLUSTER_USER="${CLUSTER_USER:-$USER}"
+CLUSTER_HOST="${CLUSTER_HOST:-student-cluster.inf.ethz.ch}"
+CLUSTER_DIR="${CLUSTER_DIR:-/home/$CLUSTER_USER}"
 
 copytocluster() {
 	scp "$1" "$CLUSTER_USER@$CLUSTER_HOST:$CLUSTER_DIR/"
