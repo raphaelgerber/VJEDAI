@@ -7,6 +7,9 @@ checkpoints/*
 logs/*
 __pycache__/*
 */__pycache__/*
+scratch.py
+scratch.sbatch
+*.out
 
 # filetypes
 *.png
