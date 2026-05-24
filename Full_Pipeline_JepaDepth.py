@@ -54,8 +54,8 @@ TEST_DIR = "/cluster/courses/cil/monocular-depth-estimation/test"
 
 VARIANT = "large"       # "base" or "large"
 BATCH_SIZE = 8          # tune per GPU; 8 is safe for vit-l on a single 5060 Ti
-NUM_EPOCHS = 50
-PATIENCE = 5
+NUM_EPOCHS = 100
+PATIENCE = 15
 LR = 1e-4
 WEIGHT_DECAY = 1e-4
 VAL_FRACTION = 0.1
@@ -74,6 +74,12 @@ if LOSS_MODE not in ("nll", "si_mse"):
 # loaded fresh from torch.hub). Set via env var to avoid editing this
 # file each time you flip stages.
 INIT_FROM = os.environ.get("JDEPTH_INIT_FROM", "").strip() or None
+RESUME_FROM = os.environ.get("JDEPTH_RESUME_FROM", "").strip() or None
+AUTO_RESUME = os.environ.get("JDEPTH_AUTO_RESUME", "0").lower() in (
+    "1",
+    "true",
+    "yes",
+)
 
 # Keep heavy checkpoints off $HOME: write them to $SCRATCH (the sbatch
 # already points $HF_HOME/$TORCH_HOME under $SCRATCH/cache/, so we use a
@@ -342,12 +348,43 @@ print("Starting training...")
 
 best_val_rmse = float("inf")
 epochs_without_improvement = 0
-last_epoch = 0
+start_epoch = 0
+last_epoch = -1
 mean_train_loss = float("nan")
 mean_val_loss = float("nan")
 mean_val_rmse = float("nan")
 
-for epoch in range(NUM_EPOCHS):
+resume_path = Path(RESUME_FROM) if RESUME_FROM else (LAST_CKPT if AUTO_RESUME else None)
+if resume_path is not None and resume_path.exists():
+    print(f"Resuming training from {resume_path}...")
+    resume_ckpt = torch.load(resume_path, map_location=device)
+    missing, unexpected = model.load_state_dict(
+        resume_ckpt["model_state_dict"], strict=False
+    )
+    bad_missing = [k for k in missing if not k.startswith("vjepa_encoder.")]
+    if bad_missing or unexpected:
+        raise RuntimeError(
+            f"Unexpected/missing keys when resuming: "
+            f"missing={bad_missing}, unexpected={unexpected}"
+        )
+    optimizer.load_state_dict(resume_ckpt["optimizer_state_dict"])
+    start_epoch = resume_ckpt["epoch"] + 1
+    last_epoch = resume_ckpt["epoch"]
+    mean_train_loss = resume_ckpt.get("train_loss", mean_train_loss)
+    mean_val_loss = resume_ckpt.get("val_loss", mean_val_loss)
+    mean_val_rmse = resume_ckpt.get("val_rmse", mean_val_rmse)
+    best_val_rmse = resume_ckpt.get(
+        "best_val_rmse", resume_ckpt.get("val_rmse", float("inf"))
+    )
+    epochs_without_improvement = resume_ckpt.get("epochs_without_improvement", 0)
+    print(
+        f"  resume loaded. next epoch={start_epoch + 1} | "
+        f"best val si-rmse={best_val_rmse:.6f}"
+    )
+elif resume_path is not None:
+    print(f"Resume checkpoint not found at {resume_path}; starting fresh.")
+
+for epoch in range(start_epoch, NUM_EPOCHS):
     last_epoch = epoch
     model.train()
 
@@ -417,6 +454,7 @@ for epoch in range(NUM_EPOCHS):
                 "epoch": epoch,
                 "val_loss": mean_val_loss,
                 "val_rmse": mean_val_rmse,
+                "best_val_rmse": best_val_rmse,
                 "config": {"variant": VARIANT, "loss_mode": LOSS_MODE},
             },
             BEST_CKPT,
@@ -441,6 +479,9 @@ torch.save(
         "epoch": last_epoch,
         "train_loss": mean_train_loss,
         "val_loss": mean_val_loss,
+        "val_rmse": mean_val_rmse,
+        "best_val_rmse": best_val_rmse,
+        "epochs_without_improvement": epochs_without_improvement,
         "config": {"variant": VARIANT, "loss_mode": LOSS_MODE},
     },
     LAST_CKPT,
