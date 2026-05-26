@@ -9,6 +9,13 @@ upsampling to the target resolution.
 
 Run from the ``mono`` directory:
     python -u utils/train_vjepa_linear_depth.py
+
+Resume an interrupted run:
+    LINEAR_RESUME_FROM=$SCRATCH/checkpoints/vjepa_linear_depth_large/last.pth \
+      python -u utils/train_vjepa_linear_depth.py
+
+Or auto-resume from ``last.pth`` when it exists:
+    LINEAR_AUTO_RESUME=1 python -u utils/train_vjepa_linear_depth.py
 """
 
 import os
@@ -29,11 +36,12 @@ warnings.filterwarnings("ignore")
 # -----------------------------------------------------------------------------
 
 TRAIN_DIR = "/cluster/courses/cil/monocular-depth-estimation/train/"
+TEST_DIR = "/cluster/courses/cil/monocular-depth-estimation/test"
 
 VARIANT = "large"       # "large" uses vjepa2_1_vit_large_384, last layer 23
 BATCH_SIZE = 8
-NUM_EPOCHS = 40
-PATIENCE = 10
+NUM_EPOCHS = 3
+PATIENCE = 2
 LR = 1e-4
 WEIGHT_DECAY = 1e-4
 VAL_FRACTION = 0.1
@@ -44,6 +52,14 @@ SCRATCH = Path(os.environ.get("SCRATCH", "."))
 CHECKPOINT_DIR = SCRATCH / "checkpoints" / f"vjepa_linear_depth_{VARIANT}"
 BEST_CKPT = CHECKPOINT_DIR / "best.pth"
 LAST_CKPT = CHECKPOINT_DIR / "last.pth"
+SUBMISSION_CSV = Path("./submission.csv")
+
+RESUME_FROM = os.environ.get("LINEAR_RESUME_FROM", "").strip() or None
+AUTO_RESUME = os.environ.get("LINEAR_AUTO_RESUME", "0").lower() in (
+    "1",
+    "true",
+    "yes",
+)
 
 VARIANTS = {
     "large": {
@@ -91,8 +107,9 @@ for module_name in list(sys.modules):
 # Imports that depend on sys.path
 # -----------------------------------------------------------------------------
 
-from dataset import TrainDataset                 # noqa: E402
+from dataset import TrainDataset, TestDataset       # noqa: E402
 from preprocessing import vjepa_preprocessing    # noqa: E402
+from create_submission import encode_depth, save_submission  # noqa: E402
 
 
 # -----------------------------------------------------------------------------
@@ -211,7 +228,14 @@ val_loader = DataLoader(
     num_workers=NUM_WORKERS,
     pin_memory=True,
 )
-print(f"data loaded. train: {train_size} | val: {val_size}")
+test_dataset = TestDataset(TEST_DIR)
+test_loader = DataLoader(
+    test_dataset,
+    batch_size=BATCH_SIZE,
+    num_workers=NUM_WORKERS,
+    pin_memory=True,
+)
+print(f"data loaded. train: {train_size} | val: {val_size} | test: {len(test_dataset)}")
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"Device: {device}")
@@ -251,21 +275,64 @@ optimizer = torch.optim.AdamW(
     weight_decay=WEIGHT_DECAY,
 )
 
+best_val_rmse = float("inf")
+epochs_without_improvement = 0
+start_epoch = 0
+last_epoch = -1
+mean_train_loss = float("nan")
+mean_val_loss = float("nan")
+
+resume_path = Path(RESUME_FROM).expanduser() if RESUME_FROM is not None else None
+if resume_path is None and AUTO_RESUME and LAST_CKPT.exists():
+    resume_path = LAST_CKPT
+
+if resume_path is not None:
+    print(f"Resuming from {resume_path}...")
+    ckpt = torch.load(resume_path, map_location=device)
+    state_dict = (
+        ckpt["model_state_dict"]
+        if isinstance(ckpt, dict) and "model_state_dict" in ckpt
+        else ckpt
+    )
+    missing, unexpected = model.load_state_dict(state_dict, strict=False)
+    non_vjepa_missing = [k for k in missing if not k.startswith("vjepa_encoder.")]
+    if non_vjepa_missing:
+        sample = non_vjepa_missing[:5]
+        suffix = "..." if len(non_vjepa_missing) > 5 else ""
+        print(f"  WARN missing non-vjepa keys: {sample}{suffix}")
+    if unexpected:
+        sample = unexpected[:5]
+        suffix = "..." if len(unexpected) > 5 else ""
+        print(f"  WARN unexpected keys: {sample}{suffix}")
+
+    if isinstance(ckpt, dict):
+        if "optimizer_state_dict" in ckpt:
+            optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+        last_epoch = int(ckpt.get("epoch", -1))
+        start_epoch = last_epoch + 1
+        mean_train_loss = float(ckpt.get("train_loss", mean_train_loss))
+        mean_val_loss = float(ckpt.get("val_rmse", mean_val_loss))
+        best_val_rmse = float(
+            ckpt.get("best_val_rmse", ckpt.get("val_rmse", best_val_rmse))
+        )
+        epochs_without_improvement = int(
+            ckpt.get("epochs_without_improvement", epochs_without_improvement)
+        )
+
+    print(
+        f"  resume loaded. next epoch={start_epoch + 1} | "
+        f"best val si-rmse={best_val_rmse:.6f}"
+    )
+
 
 # -----------------------------------------------------------------------------
 # Training loop
 # -----------------------------------------------------------------------------
 
 CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
-print("Starting training...")
+print(f"Starting training at epoch {start_epoch + 1}/{NUM_EPOCHS}...")
 
-best_val_rmse = float("inf")
-epochs_without_improvement = 0
-last_epoch = -1
-mean_train_loss = float("nan")
-mean_val_loss = float("nan")
-
-for epoch in range(NUM_EPOCHS):
+for epoch in range(start_epoch, NUM_EPOCHS):
     last_epoch = epoch
     model.train()
 
@@ -367,5 +434,44 @@ torch.save(
     LAST_CKPT,
 )
 
+
+# -----------------------------------------------------------------------------
+# Inference for submission (uses the best checkpoint)
+# -----------------------------------------------------------------------------
+
+submission_ckpt = BEST_CKPT if BEST_CKPT.exists() else LAST_CKPT
+print(f"Loading submission checkpoint from {submission_ckpt}...")
+checkpoint = torch.load(submission_ckpt, map_location=device)
+state_dict = (
+    checkpoint["model_state_dict"]
+    if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint
+    else checkpoint
+)
+missing, unexpected = model.load_state_dict(state_dict, strict=False)
+bad_missing = [k for k in missing if not k.startswith("vjepa_encoder.")]
+if bad_missing or unexpected:
+    raise RuntimeError(
+        f"Unexpected/missing keys when restoring trained linear probe: "
+        f"missing={bad_missing}, unexpected={unexpected}"
+    )
+model.eval()
+
+rows = []
+with torch.no_grad():
+    for batch in test_loader:
+        images = batch["image"].to(device)
+        image_ids = batch["id"]
+        H, W = images.shape[-2:]
+
+        pred_depths = model(vjepa_preprocessing(images), output_size=(H, W))
+        if pred_depths.ndim == 4:
+            pred_depths = pred_depths.squeeze(1)
+        pred_depths = pred_depths.detach().cpu().numpy()
+
+        for depth, image_id in zip(pred_depths, image_ids):
+            rows.append({"id": f"{image_id}_depth", "Depths": encode_depth(depth)})
+
+save_submission(rows, str(SUBMISSION_CSV))
 print(f"Done. Best checkpoint: {BEST_CKPT}")
 print(f"Last checkpoint: {LAST_CKPT}")
+print(f"Submission written to {SUBMISSION_CSV} ({len(rows)} rows).")
