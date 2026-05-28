@@ -1,11 +1,11 @@
 #!/bin/bash
 #SBATCH --job-name=jdepth_train
-#SBATCH --output=logs/%x-%j.out
-#SBATCH --error=logs/%x-%j.err
+#SBATCH --output=%x-%j.out
+#SBATCH --error=%x-%j.err
 #SBATCH --partition=gpu
 #SBATCH --gpus 2080ti:1
 #SBATCH --account=cil_jobs
-#SBATCH --time=12:00:00
+#SBATCH --time=20:00:00
 
 set -e
 
@@ -17,9 +17,9 @@ export JDEPTH_REQUIRE_CUDA="1"
 echo "CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES"
 nvidia-smi
 
-#==================== CHANGE "MONO" TO YOUR OWN PROJECT FOLDER =========================
-cd "$HOME/mono"
-
+#==================== CHANGE THIS IF YOUR PROJECT FOLDER DIFFERS ========================
+REPO_DIR="$HOME/mono"
+cd "$REPO_DIR"
 
 mkdir -p "external"
 
@@ -43,8 +43,13 @@ python -m pip install -r "external/Depth-Anything-V2/requirements.txt"
 
 export PYTHONPATH="external/vjepa2/src:$PYTHONPATH"
 export PYTHONPATH="external/vjepa2:$PYTHONPATH"
-export PYTHONPATH="$HOME/mono/src:$PYTHONPATH"
+export PYTHONPATH="$REPO_DIR/src:$PYTHONPATH"
 
-export JDEPTH_LOSS_MODE='si_mse'
+unset JDEPTH_INIT_FROM
+unset JDEPTH_RESUME_FROM
+unset JDEPTH_AUTO_RESUME
+unset JDEPTH_DA_CHECKPOINT
+
+export JDEPTH_LOSS_MODE='nll'
 
 python -u Full_Pipeline_JEDAI_random.py

@@ -103,9 +103,9 @@ SUBMISSION_CSV = Path("./submission.csv")
 PROJECT_ROOT = Path.home().resolve()
 MONO_ROOT = Path(__file__).resolve().parent
 SRC_DIR = MONO_ROOT / "src"
-VJEPA_ROOT = PROJECT_ROOT / "external" / "vjepa2"
+VJEPA_ROOT = MONO_ROOT / "external" / "vjepa2"
 VJEPA_SRC = VJEPA_ROOT / "src"
-DA_ROOT = PROJECT_ROOT / "external" / "Depth-Anything-V2"
+DA_ROOT = MONO_ROOT / "external" / "Depth-Anything-V2"
 
 for p in [str(DA_ROOT)]:
     while p in sys.path:
@@ -202,16 +202,12 @@ print(f"VJEPA ({cfg['vjepa_arch']}) loaded.")
 # Now it's safe to expose DA so JepaDepthAnything can import its DPT head.
 sys.path.append(str(DA_ROOT))
 
-print(
-    "Randomly initializing DPT heads "
-    f"from {DA_CHECKPOINT if DA_CHECKPOINT is not None else cfg['da_repo_id']}..."
-)
+print("Randomly initializing DA-V2 decoder weights.")
 model = build_jepa_depth_anything(
     vj_encoder,
     variant=VARIANT,
     device=device,
     load_da_pretrained=False,
-    da_checkpoint_path=DA_CHECKPOINT,
 )
 n_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
 n_frozen = sum(p.numel() for p in model.parameters() if not p.requires_grad)
