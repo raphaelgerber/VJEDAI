@@ -55,7 +55,7 @@ TEST_DIR = "/cluster/courses/cil/monocular-depth-estimation/test"
 
 VARIANT = "large"       # "base" or "large"
 BATCH_SIZE = 8          # tune per GPU; 8 is safe for vit-l on a single 5060 Ti
-NUM_EPOCHS = 23
+NUM_EPOCHS = 36
 PATIENCE = 10
 LR = 1e-4
 WEIGHT_DECAY = 1e-4

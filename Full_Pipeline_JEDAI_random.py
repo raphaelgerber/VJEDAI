@@ -55,8 +55,8 @@ TEST_DIR = "/cluster/courses/cil/monocular-depth-estimation/test"
 
 VARIANT = "large"       # "base" or "large"
 BATCH_SIZE = 8          # tune per GPU; 8 is safe for vit-l on a single 5060 Ti
-NUM_EPOCHS = 36
-PATIENCE = 10
+NUM_EPOCHS = 10
+PATIENCE = 5
 LR = 1e-4
 WEIGHT_DECAY = 1e-4
 VAL_FRACTION = 0.1
@@ -81,13 +81,14 @@ AUTO_RESUME = os.environ.get("JDEPTH_AUTO_RESUME", "0").lower() in (
     "true",
     "yes",
 )
+DA_CHECKPOINT = os.environ.get("JDEPTH_DA_CHECKPOINT", "").strip() or None
 
 # Keep heavy checkpoints off $HOME: write them to $SCRATCH (the sbatch
 # already points $HF_HOME/$TORCH_HOME under $SCRATCH/cache/, so we use a
 # sibling $SCRATCH/checkpoints/ subtree to avoid colliding with caches).
 # Falls back to a local ./checkpoints/ if $SCRATCH isn't set (e.g., laptop).
 SCRATCH = Path(os.environ.get("SCRATCH", "."))
-CHECKPOINT_DIR = SCRATCH / "checkpoints" / f"jepa_depth_{VARIANT}"
+CHECKPOINT_DIR = SCRATCH / "checkpoints" / f"jedai_experiemnt_{VARIANT}"
 # Mode-tagged so Stage 1 (si_mse) and Stage 2 (nll) don't overwrite each
 # other when run back-to-back from the same $SCRATCH.
 BEST_CKPT = CHECKPOINT_DIR / f"best_{LOSS_MODE}.pth"
@@ -201,7 +202,17 @@ print(f"VJEPA ({cfg['vjepa_arch']}) loaded.")
 # Now it's safe to expose DA so JepaDepthAnything can import its DPT head.
 sys.path.append(str(DA_ROOT))
 
-model = build_jepa_depth_anything(vj_encoder, variant=VARIANT, device=device)
+print(
+    "Randomly initializing DPT heads "
+    f"from {DA_CHECKPOINT if DA_CHECKPOINT is not None else cfg['da_repo_id']}..."
+)
+model = build_jepa_depth_anything(
+    vj_encoder,
+    variant=VARIANT,
+    device=device,
+    load_da_pretrained=False,
+    da_checkpoint_path=DA_CHECKPOINT,
+)
 n_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
 n_frozen = sum(p.numel() for p in model.parameters() if not p.requires_grad)
 print(f"JepaDepthAnything built. trainable: {n_trainable/1e6:.2f}M | frozen: {n_frozen/1e6:.2f}M")
