@@ -4,7 +4,7 @@ import shutil
 
 hf_token = os.environ.get("MY_HF_TOKEN")
 
-out_path = './v1.pth'
+out_path = '/work/scratch/msayfiddinov/checkpoints/jepa_depth_large/best20_nll.pth'
 
 cached = hf_hub_download(
     repo_id='kalandarX/jdepth',

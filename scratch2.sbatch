@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=jdepth_train
+#SBATCH --job-name=test
 #SBATCH --output=logs/%x-%j.out
 #SBATCH --error=logs/%x-%j.err
 #SBATCH --partition=gpu
@@ -45,6 +45,4 @@ export PYTHONPATH="external/vjepa2/src:$PYTHONPATH"
 export PYTHONPATH="external/vjepa2:$PYTHONPATH"
 export PYTHONPATH="$HOME/mono/src:$PYTHONPATH"
 
-export JDEPTH_LOSS_MODE='si_mse'
-
-python -u Full_Pipeline_JEDAI_random.py
+python -u utils/export_jdepth_examples.py

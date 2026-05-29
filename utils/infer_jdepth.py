@@ -25,6 +25,8 @@ trying loss_mode 'nll' then 'si_mse'.
 """
 
 import argparse
+import csv
+import math
 import os
 import sys
 import warnings
@@ -45,11 +47,23 @@ TEST_DIR = "/cluster/courses/cil/monocular-depth-estimation/test"
 DEPTH_MIN, DEPTH_MAX = 0.001, 80.0  # GT range (scale-invariant metric)
 
 PROJECT_ROOT = Path.home().resolve()
-MONO_ROOT = Path(__file__).resolve().parent
+MONO_ROOT = Path(__file__).resolve().parents[1]
 SRC_DIR = MONO_ROOT / "src"
-VJEPA_ROOT = PROJECT_ROOT / "external" / "vjepa2"
+
+
+def first_existing(*paths):
+    for path in paths:
+        if path.exists():
+            return path
+    return paths[0]
+
+
+VJEPA_ROOT = first_existing(MONO_ROOT / "external" / "vjepa2", PROJECT_ROOT / "external" / "vjepa2")
 VJEPA_SRC = VJEPA_ROOT / "src"
-DA_ROOT = PROJECT_ROOT / "external" / "Depth-Anything-V2"
+DA_ROOT = first_existing(
+    MONO_ROOT / "external" / "Depth-Anything-V2",
+    PROJECT_ROOT / "external" / "Depth-Anything-V2",
+)
 
 
 def parse_args():
@@ -59,7 +73,36 @@ def parse_args():
     p.add_argument("--out", default="./submission.csv", help="output csv path")
     p.add_argument("--test-dir", default=TEST_DIR)
     p.add_argument("--batch-size", type=int, default=8)
+    p.add_argument(
+        "--uncertainty-temperature",
+        type=float,
+        default=1.0,
+        help="Scale predicted uncertainty as sigma *= T, equivalent to log_var += 2*log(T).",
+    )
+    p.add_argument(
+        "--calibration-csv",
+        default=None,
+        help="Optional calibration_jdepth.csv; uses temperature_scale from it if present.",
+    )
     return p.parse_args()
+
+
+def load_calibration_temperature(path):
+    if path is None:
+        return None
+    with open(path, newline="", encoding="utf-8") as f:
+        for row in csv.DictReader(f):
+            if row.get("metric") == "temperature_scale":
+                return float(row["value"])
+    raise ValueError(f"temperature_scale not found in {path}")
+
+
+def apply_uncertainty_temperature(log_var, temperature):
+    if temperature <= 0:
+        raise ValueError("uncertainty temperature must be positive")
+    if temperature == 1.0:
+        return log_var
+    return log_var + 2.0 * math.log(temperature)
 
 
 def resolve_ckpt(args):
@@ -139,6 +182,11 @@ def build_model(variant, device):
 def main():
     args = parse_args()
     ckpt_path = resolve_ckpt(args)
+    csv_temperature = load_calibration_temperature(args.calibration_csv)
+    uncertainty_temperature = csv_temperature or args.uncertainty_temperature
+    if uncertainty_temperature <= 0:
+        sys.exit("--uncertainty-temperature must be positive")
+    print(f"Uncertainty temperature: {uncertainty_temperature:.6g}")
 
     setup_syspath()
     from dataset import TestDataset                       # noqa: E402
@@ -183,6 +231,10 @@ def main():
             H, W = images.shape[-2:]
 
             out = model(vjepa_preprocessing(images), output_size=(H, W))
+            if "log_var" in out:
+                out["log_var"] = apply_uncertainty_temperature(
+                    out["log_var"], uncertainty_temperature
+                )
             pred_depths = out["depth"]
             if pred_depths.ndim == 4:
                 pred_depths = pred_depths.squeeze(1)

@@ -9,6 +9,7 @@ residuals.
 """
 
 import argparse
+import math
 import os
 import sys
 import warnings
@@ -73,7 +74,24 @@ def parse_args():
     parser.add_argument("--val-fraction", type=float, default=VAL_FRACTION)
     parser.add_argument("--output", type=Path, default=Path("calibration_jdepth.csv"))
     parser.add_argument("--max-batches", type=int, default=None)
+    parser.add_argument(
+        "--temperature",
+        default="auto",
+        help=(
+            "Uncertainty temperature applied as sigma *= T. Use 'auto' to fit "
+            "T on this validation split, or pass a positive float."
+        ),
+    )
     return parser.parse_args()
+
+
+def parse_temperature(value):
+    if isinstance(value, str) and value.lower() == "auto":
+        return None
+    temperature = float(value)
+    if temperature <= 0:
+        raise ValueError("--temperature must be 'auto' or a positive float")
+    return temperature
 
 
 def setup_paths():
@@ -166,9 +184,10 @@ def build_model_from_checkpoint(checkpoint_path, requested_variant, device, vjep
     return model, variant
 
 
-def evaluate_calibration(model, loader, device, max_batches=None, eps=1e-6):
+def evaluate_calibration(model, loader, device, max_batches=None, temperature=1.0, eps=1e-6):
     from preprocessing import vjepa_preprocessing
 
+    log_temperature = 2.0 * math.log(temperature)
     count = 0
     residual_sum_sq = 0.0
     sigma_sum = 0.0
@@ -202,6 +221,8 @@ def evaluate_calibration(model, loader, device, max_batches=None, eps=1e-6):
             log_diff = torch.log(pred) - torch.log(target)
             residual = log_diff - torch.mean(log_diff[mask])
             log_var = torch.clamp(log_var, min=LOG_VAR_MIN, max=LOG_VAR_MAX)
+            if temperature != 1.0:
+                log_var = log_var + log_temperature
             sigma = torch.exp(0.5 * log_var)
 
             residual = residual[mask]
@@ -234,7 +255,8 @@ def evaluate_calibration(model, loader, device, max_batches=None, eps=1e-6):
     rms_sigma = (sigma_sq_sum / count) ** 0.5
     mean_abs_res = abs_res_sum / count
     mean_z = z_sum / count
-    z_std = max(z_sum_sq / count - mean_z ** 2, 0.0) ** 0.5
+    mean_z_sq = z_sum_sq / count
+    z_std = max(mean_z_sq - mean_z ** 2, 0.0) ** 0.5
     mean_abs_z = abs_z_sum / count
 
     cov_sigma_abs_res = sigma_abs_res_sum / count - mean_sigma * mean_abs_res
@@ -247,6 +269,7 @@ def evaluate_calibration(model, loader, device, max_batches=None, eps=1e-6):
 
     stats = {
         "num_pixels": count,
+        "temperature": temperature,
         "si_log_residual_rmse": empirical_rmse,
         "mean_pred_sigma": mean_sigma,
         "rms_pred_sigma": rms_sigma,
@@ -254,6 +277,7 @@ def evaluate_calibration(model, loader, device, max_batches=None, eps=1e-6):
         "mean_log_var": log_var_sum / count,
         "mean_gaussian_nll": nll_sum / count,
         "normalized_residual_mean": mean_z,
+        "normalized_residual_mean_sq": mean_z_sq,
         "normalized_residual_std": z_std,
         "normalized_residual_mae": mean_abs_z,
         "abs_error_sigma_corr": corr,
@@ -266,7 +290,18 @@ def evaluate_calibration(model, loader, device, max_batches=None, eps=1e-6):
         stats[f"coverage_gap_{int(level * 100)}"] = coverage - level
         ece += abs(coverage - level)
     stats["coverage_ece"] = ece / len(CALIBRATION_LEVELS)
+    stats["nll_optimal_temperature_from_here"] = math.sqrt(max(mean_z_sq, eps))
     return stats
+
+
+def merge_stats(raw_stats, calibrated_stats, temperature):
+    merged = dict(calibrated_stats)
+    merged["temperature_scale"] = temperature
+    for key, value in raw_stats.items():
+        merged[f"raw_{key}"] = value
+    for key, value in calibrated_stats.items():
+        merged[f"calibrated_{key}"] = value
+    return merged
 
 
 def save_stats(stats, path):
@@ -301,15 +336,38 @@ def main():
     )
     print(f"Model restored. variant={variant}")
 
-    stats = evaluate_calibration(model, val_loader, device, args.max_batches)
-    save_stats(stats, args.output)
+    requested_temperature = parse_temperature(args.temperature)
+    raw_stats = evaluate_calibration(
+        model, val_loader, device, args.max_batches, temperature=1.0
+    )
 
-    if stats.get("num_pixels", 0) == 0:
+    if raw_stats.get("num_pixels", 0) == 0:
         print("No valid depth pixels found.")
         return
 
+    temperature = requested_temperature
+    if temperature is None:
+        temperature = raw_stats["nll_optimal_temperature_from_here"]
+
+    if temperature == 1.0:
+        stats = raw_stats
+    else:
+        stats = evaluate_calibration(
+            model, val_loader, device, args.max_batches, temperature=temperature
+        )
+
+    save_stats(merge_stats(raw_stats, stats, temperature), args.output)
+
     print(
-        "Calibration | "
+        "Raw calibration | "
+        f"norm-std: {raw_stats['normalized_residual_std']:.4f} | "
+        f"rmse/rms-sigma: {raw_stats['rmse_over_rms_sigma']:.4f} | "
+        f"ece: {raw_stats['coverage_ece']:.4f} | "
+        f"corr(abs err, sigma): {raw_stats['abs_error_sigma_corr']:.4f}"
+    )
+    print(f"Temperature scale: {temperature:.6g}")
+    print(
+        "Calibrated calibration | "
         f"norm-std: {stats['normalized_residual_std']:.4f} | "
         f"rmse/rms-sigma: {stats['rmse_over_rms_sigma']:.4f} | "
         f"ece: {stats['coverage_ece']:.4f} | "
